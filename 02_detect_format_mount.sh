@@ -1,5 +1,5 @@
 #!/bin/bash
-# Script 2: Detect, Format, and Mount New Partitions
+# Script 2: Detect, Format, and Mount New Partitions (v2 - Fixed Detection)
 
 set -euo pipefail
 
@@ -12,6 +12,11 @@ SUBVOLUMES=("@" "@home" "@snapshots" "@var_cache" "@var_log" "@tmp")
 get_partition_path() {
     local disk=$1
     local part_num=$2
+    # Check if part_num is empty or not a number
+    if [[ -z "$part_num" || ! "$part_num" =~ ^[0-9]+$ ]]; then
+        echo "ERROR: Invalid partition number detected: 	$part_num" >&2
+        return 1
+    fi
     if [[ "$disk" == *nvme* || "$disk" == *mmcblk* ]]; then
         echo "${disk}p${part_num}"
     else
@@ -19,47 +24,43 @@ get_partition_path() {
     fi
 }
 
-# --- Partition Detection ---
+# --- Partition Detection (v2 - Sort Numerically) ---
 echo "Attempting to detect the new partitions on ${TARGET_DISK}..."
 
-# Get partition info, sort by start sector, ignore disk itself
-mapfile -t partitions < <(lsblk -bno NAME,TYPE,SIZE,MOUNTPOINT "${TARGET_DISK}" | grep "part" | sort -k1)
+# Get partition info (Name, Partition Number, Type, Size), filter for partitions, sort numerically by partition number
+# Using -p flag to get full paths directly might be simpler, but let's stick to parsing for now
+mapfile -t partitions_sorted < <(lsblk -bno NAME,PARTN,TYPE,SIZE "${TARGET_DISK}" | grep "part" | sort -nk2)
 
-# Assume the last 3 partitions created are the new ones (ESP, SWAP, ROOT)
-# This is heuristic and relies on the partitioning script running correctly.
-num_partitions=${#partitions[@]}
+# Assume the last 3 partitions (highest numbers) are the new ones (ESP, SWAP, ROOT)
+num_partitions=${#partitions_sorted[@]}
 if [[ $num_partitions -lt 3 ]]; then
     echo "ERROR: Expected at least 3 partitions, found ${num_partitions}. Cannot reliably detect new partitions."
     lsblk "${TARGET_DISK}"
     exit 1
 fi
 
-# Extract info for the presumed new partitions
-last3_indices=()
-for (( i=num_partitions-3; i<num_partitions; i++ )); do
-    last3_indices+=($i)
-done
+# Extract info for the presumed new partitions (last 3 lines after numeric sort)
+presumed_esp_info=(${partitions_sorted[num_partitions-3]})
+presumed_swap_info=(${partitions_sorted[num_partitions-2]})
+presumed_root_info=(${partitions_sorted[num_partitions-1]})
 
-presumed_esp_info=(${partitions[${last3_indices[0]}]})
-presumed_swap_info=(${partitions[${last3_indices[1]}]})
-presumed_root_info=(${partitions[${last3_indices[2]}]})
+# Extract partition numbers directly from the second column (PARTN)
+presumed_esp_num=${presumed_esp_info[1]:-ERROR}
+presumed_swap_num=${presumed_swap_info[1]:-ERROR}
+presumed_root_num=${presumed_root_info[1]:-ERROR}
 
-# Extract partition numbers from names (e.g., nvme0n1p5 -> 5)
-presumed_esp_num=$(echo "${presumed_esp_info[0]}" | sed 's/.*p\?//')
-presumed_swap_num=$(echo "${presumed_swap_info[0]}" | sed 's/.*p\?//')
-presumed_root_num=$(echo "${presumed_root_info[0]}" | sed 's/.*p\?//')
-
-# Construct full paths
-DETECTED_ESP_PART=$(get_partition_path "${TARGET_DISK}" "${presumed_esp_num}")
-DETECTED_SWAP_PART=$(get_partition_path "${TARGET_DISK}" "${presumed_swap_num}")
-DETECTED_ROOT_PART=$(get_partition_path "${TARGET_DISK}" "${presumed_root_num}")
+# Construct full paths using the partition number
+DETECTED_ESP_PART=$(get_partition_path "${TARGET_DISK}" "${presumed_esp_num}") || exit 1
+DETECTED_SWAP_PART=$(get_partition_path "${TARGET_DISK}" "${presumed_swap_num}") || exit 1
+DETECTED_ROOT_PART=$(get_partition_path "${TARGET_DISK}" "${presumed_root_num}") || exit 1
 
 # --- User Confirmation ---
 echo ""
-echo "Detected the following as the newly created partitions:"
-echo "  ESP:  ${DETECTED_ESP_PART} (Size: $((${presumed_esp_info[2]} / 1024 / 1024)) MiB)"
-echo "  SWAP: ${DETECTED_SWAP_PART} (Size: $((${presumed_swap_info[2]} / 1024 / 1024)) MiB)"
-echo "  ROOT: ${DETECTED_ROOT_PART} (Size: $((${presumed_root_info[2]} / 1024 / 1024)) MiB)"
+echo "Detected the following as the newly created partitions (highest numbers):"
+# Adjust size calculation index from [2] to [3] because PARTN was added
+echo "  ESP:  ${DETECTED_ESP_PART} (Num: ${presumed_esp_num}, Size: $((${presumed_esp_info[3]:-0} / 1024 / 1024)) MiB)"
+echo "  SWAP: ${DETECTED_SWAP_PART} (Num: ${presumed_swap_num}, Size: $((${presumed_swap_info[3]:-0} / 1024 / 1024)) MiB)"
+echo "  ROOT: ${DETECTED_ROOT_PART} (Num: ${presumed_root_num}, Size: $((${presumed_root_info[3]:-0} / 1024 / 1024)) MiB)"
 echo ""
 echo "These partitions will be formatted and mounted."
 echo "!!! WARNING: Formatting is DESTRUCTIVE to the target partition !!!"
