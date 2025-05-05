@@ -8,8 +8,8 @@ TIMEZONE="Asia/Kolkata" # e.g., "Europe/London", "America/New_York"
 LOCALE="en_IN.UTF-8"
 LOCALE_GEN="en_IN.UTF-8 UTF-8"
 KEYMAP="us" # e.g., "uk", "de"
-HOSTNAME="ideapad-arch"
-USERNAME="archuser"
+HOSTNAME="right9xpc"
+USERNAME="right9pc"
 
 # --- Chroot Script Content ---
 CHROOT_SCRIPT_CONTENT=$(cat << EOF
